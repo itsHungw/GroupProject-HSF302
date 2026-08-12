@@ -231,16 +231,27 @@ public class OrderServiceImpl implements OrderService {
             User customer) throws RuntimeException {
 
         BigDecimal subtotal = BigDecimal.ZERO;
+        Map<Integer, SeafoodProduct> authoritativeProducts = new HashMap<>();
 
         // 1. Stock Deduction & Subtotal Calculation
         for (CartItemDTO item : cartItems) {
-            if (item.getProductId() != null) {
-                int affected = seafoodProductRepository.deductStock(Long.valueOf(item.getProductId()), item.getQuantity());
-                if (affected == 0) {
-                    throw new RuntimeException("Sản phẩm " + item.getName() + " hiện đã hết hàng hoặc không đủ số lượng.");
-                }
+            if (item.getProductId() == null) {
+                throw new RuntimeException("Giỏ hàng chứa sản phẩm không hợp lệ.");
             }
-            subtotal = subtotal.add(BigDecimal.valueOf(item.getUnitPrice()).multiply(BigDecimal.valueOf(item.getQuantity())));
+            if (item.getQuantity() == null || item.getQuantity() <= 0) {
+                throw new RuntimeException("Số lượng sản phẩm phải lớn hơn 0.");
+            }
+            int affected = seafoodProductRepository.deductStock(Long.valueOf(item.getProductId()), item.getQuantity());
+            if (affected == 0) {
+                throw new RuntimeException("Sản phẩm không tồn tại, đã ngừng bán hoặc không đủ số lượng.");
+            }
+            // Cart fields originate in the browser/session and can be modified by the client.
+            // Reload commercial data after the guarded stock update and use only database values
+            // for totals, payment amount, and the immutable order-item snapshot.
+            SeafoodProduct product = seafoodProductRepository.findById(Long.valueOf(item.getProductId()))
+                    .orElseThrow(() -> new RuntimeException("Sản phẩm không tồn tại."));
+            authoritativeProducts.put(item.getProductId(), product);
+            subtotal = subtotal.add(product.getPrice().multiply(BigDecimal.valueOf(item.getQuantity())));
         }
 
         // 2. Coupon Validation & Calculation
@@ -294,20 +305,18 @@ public class OrderServiceImpl implements OrderService {
 
         // 4. Save Order Items
         for (CartItemDTO itemDTO : cartItems) {
+            SeafoodProduct product = authoritativeProducts.get(itemDTO.getProductId());
+            BigDecimal unitPrice = product.getPrice();
             OrderItem orderItem = OrderItem.builder()
                     .order(savedOrder)
-                    .productName(itemDTO.getName())
+                    .product(product)
+                    .productName(product.getName())
                     .productImageUrl(itemDTO.getImageUrl())
                     .quantity(itemDTO.getQuantity())
-                    .unitPrice(BigDecimal.valueOf(itemDTO.getUnitPrice()))
-                    .subtotal(BigDecimal.valueOf(itemDTO.getUnitPrice()).multiply(BigDecimal.valueOf(itemDTO.getQuantity())))
+                    .unitPrice(unitPrice)
+                    .subtotal(unitPrice.multiply(BigDecimal.valueOf(itemDTO.getQuantity())))
                     .createdDate(Instant.now())
                     .build();
-
-            if (itemDTO.getProductId() != null) {
-                SeafoodProduct product = seafoodProductRepository.findById(Long.valueOf(itemDTO.getProductId())).orElse(null);
-                orderItem.setProduct(product);
-            }
 
             orderItemRepository.save(orderItem);
         }
